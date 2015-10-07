@@ -1,0 +1,1520 @@
+package com.techklout.svc;
+
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.InputStream;
+import java.sql.Timestamp;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.StringTokenizer;
+import java.util.regex.Pattern;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+
+import org.apache.log4j.Logger;
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.api.java.function.FlatMapFunction;
+import org.apache.spark.api.java.function.Function;
+import org.apache.spark.sql.DataFrame;
+import org.apache.spark.sql.GroupedData;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.SQLContext;
+import org.apache.spark.sql.SaveMode;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
+
+import com.datastax.driver.core.Session;
+import com.datastax.spark.connector.cql.CassandraConnector;
+import com.techklout.bean.*;
+import com.techklout.util.Config;
+import com.techklout.util.TKRedisClient;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+
+import redis.clients.jedis.Jedis;
+
+public class TKSeedDataProcessor {
+	static Logger logger = Logger.getLogger(TKSeedDataProcessor.class);
+	static SparkConf conf = null;
+	static JavaSparkContext context = null;
+	static SQLContext sqlContext = null;
+	static CassandraConnector connector = null;
+	static Session session = null;
+
+
+
+	private static final Function<String, Post> POST_PARSE_XML =
+			new Function<String, Post>() {
+		public Post call(String s) throws Exception {
+
+			Post post = new Post();
+
+			try {
+
+				InputStream is = new ByteArrayInputStream(s.getBytes());
+				DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+				DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+				Document doc = null;
+				try {
+					doc = dBuilder.parse(is);
+				} catch (Exception e) {
+					logger.error("Error parsing - " + s);
+					return post;
+				}
+
+				doc.getDocumentElement().normalize();
+
+				NodeList nList = doc.getElementsByTagName("row");
+				for (int temp = 0; temp < nList.getLength(); temp++) {
+
+					Node nNode = nList.item(temp);
+					//System.out.println("nodeType = " + nNode.getNodeType() + "  node name = " + nNode.getNodeName() );
+					if (!"row".equals(nNode.getNodeName())) {
+						logger.debug("Not interested in this string - " + s);
+						return post;
+					}
+					NamedNodeMap attrs = nNode.getAttributes();
+					if (attrs == null || attrs.getLength() == 0) {
+						logger.debug("Empty row!!! - " + s);
+						return post;
+					}              
+
+					String id = "-1";
+					String postTypeId = "-1";
+					String userId = "-1";
+					String creationDate = null;
+					String parentPostId = "-1";
+					String acceptedAnswerId = "-1";
+					String tags = "";
+					String score = "0";
+					String answerCount = "0";
+					String viewCount = "0";
+					String commentCount = "0";
+					String favoriteCount = "0";
+
+
+					if (attrs.getNamedItem("Id") != null)
+						id = attrs.getNamedItem("Id").getNodeValue();
+
+					if (id == null || id.isEmpty()) {
+						logger.debug("PostId info not found - " + s);
+						return post;
+					}
+
+					if (attrs.getNamedItem("PostTypeId") != null)
+						postTypeId = attrs.getNamedItem("PostTypeId").getNodeValue();
+
+					if (postTypeId == null || postTypeId.isEmpty()) {
+						logger.debug(" PostTypeId info not found for post - " + s);
+						return post;
+					}
+
+					if (!"1".equals(postTypeId) && !"2".equals(postTypeId)) {
+						logger.debug("Not interested in this postTypeId - " + s);
+						return post;
+					}
+
+					if (attrs.getNamedItem("OwnerUserId") != null)
+						userId = attrs.getNamedItem("OwnerUserId").getNodeValue();
+
+					if (userId == null || userId.isEmpty()) {
+						logger.debug("Owner info not found - " + s);
+						return post;
+					}
+
+					if (attrs.getNamedItem("CreationDate") != null)
+						creationDate = attrs.getNamedItem("CreationDate").getNodeValue();
+
+					if (creationDate == null || creationDate.isEmpty()) {
+						logger.debug("Creation date not found for the post - " + s);
+						return post;
+					}
+
+					if (attrs.getNamedItem("ParentId") != null)
+						parentPostId = attrs.getNamedItem("ParentId").getNodeValue();
+
+					if (attrs.getNamedItem("AcceptedAnswerId") != null)
+						acceptedAnswerId = attrs.getNamedItem("AcceptedAnswerId").getNodeValue();
+
+					if (attrs.getNamedItem("Tags") != null) {
+
+						tags = attrs.getNamedItem("Tags").getNodeValue();
+						if (tags == null || tags.isEmpty()) tags = "";                   	
+						String[] strs = tags.split("><");
+						ArrayList<String> list = new ArrayList<String>();
+						if (strs != null && strs.length > 0) {
+							for (int i = 0; i < strs.length; i++) {
+								if (strs[i] == null) continue;
+								strs[i] = strs[i].trim();
+								if (strs[i].startsWith("<") ) {
+									strs[i] = strs[i].substring(1);
+								}
+								if (strs[i].endsWith(">")) {
+									strs[i] = strs[i].substring(0, strs[i].length()-1);
+								}
+								list.add(strs[i]);
+
+							}                   		
+
+						}
+						post.setTags(tags);
+						post.setTagList(list);
+
+					}
+					if (attrs.getNamedItem("Score") != null)
+						score = attrs.getNamedItem("Score").getNodeValue();
+
+					if (attrs.getNamedItem("AnswerCount") != null) 
+						answerCount = attrs.getNamedItem("AnswerCount").getNodeValue();
+
+					if (attrs.getNamedItem("ViewCount") != null) 
+						viewCount = attrs.getNamedItem("ViewCount").getNodeValue();
+
+					if (attrs.getNamedItem("CommentCount") != null) 
+						commentCount = attrs.getNamedItem("CommentCount").getNodeValue();
+
+					if (attrs.getNamedItem("FavoriteCount") != null) 
+						favoriteCount = attrs.getNamedItem("FavoriteCount").getNodeValue();
+
+					// System.out.println(id + "," + name + "," + gender);
+					//line.add(id + "|" + postTypeId + "|" + userId + "|" + parentPostId + "|" + creationDate + "|" + acceptedAnswerId + "|" + score + "|" + tags);
+
+					post.setPostId(Long.parseLong(id));
+					post.setPostTypeId(Integer.parseInt(postTypeId));
+					post.setUserId(Long.parseLong(userId));
+					post.setParentPostId(Long.parseLong(parentPostId));
+					//2014-04-17T00:49:28.617
+					// SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+					SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+					try {
+						int index = creationDate.indexOf("T");
+						if (index != -1) {
+							creationDate = creationDate.substring(0, index);
+						}
+						post.setCreationDate(new Timestamp(sdf.parse(creationDate).getTime()));
+					} catch (Exception e) {
+						logger.error("Exception while parsing creation date - " + creationDate);
+						return post;
+					}
+
+					post.setAcceptedAnswerId(Long.parseLong(acceptedAnswerId));
+					post.setScore(Long.parseLong(score));
+					post.setAnswerCount(Long.parseLong(answerCount));
+					post.setViewCount(Long.parseLong(viewCount));
+					post.setCommentCount(Long.parseLong(commentCount));
+					post.setFavoriteCount(Long.parseLong(favoriteCount));
+					if (post.getPostTypeId() == 1) { // question
+						String value = TKRedisClient.getRedis().set("" + post.getPostId(), "Q_" + userId + "_" + post.getTags());
+						//logger.debug("Stored tag info in redis for key - " + post.getPostId()  + " status = " + value);
+					} else { //answer.  fetch the tag info from the appropriate question post in redis
+						if ((post.getParentPostId() > 0) &&  (post.getTags() == null || post.getTags().isEmpty())) {
+							String psInfo = (String)TKRedisClient.getRedis().get("" + post.getParentPostId());
+							if (psInfo != null) {
+								if (psInfo.startsWith("Q_") || psInfo.startsWith("A_")){
+									psInfo = psInfo.substring(2);
+								}
+								int index = psInfo.indexOf("_");
+								if (index != -1) {
+									tags = psInfo.substring(index + 1);
+									if (tags == null || tags.isEmpty()) tags = "";                   	
+									String[] strs = tags.split("><");
+									ArrayList<String> list = new ArrayList<String>();
+									if (strs != null && strs.length > 0) {
+										for (int i = 0; i < strs.length; i++) {
+											if (strs[i] == null) continue;
+											strs[i] = strs[i].trim();
+											if (strs[i].startsWith("<") ) {
+												strs[i] = strs[i].substring(1);
+											}
+											if (strs[i].endsWith(">")) {
+												strs[i] = strs[i].substring(0, strs[i].length()-1);
+											}
+											list.add(strs[i]);
+
+										}                   		
+
+									}
+									post.setTags(tags);
+									post.setTagList(list);
+
+								}
+							} else {
+							//	logger.error("*********************Key not found in redis for post:" + post.getParentPostId());
+							}
+						}
+						String value = TKRedisClient.getRedis().set("" + post.getPostId(), "A_" + userId + "_" + post.getTags());
+						//logger.debug("Stored tag info in redis for key - " + post.getPostId()  + " status = " + value);
+					}
+
+					return post;
+
+				}
+			} catch (Exception e) {
+				//LogWriter.getInstance().WriteLog(e.getMessage());
+				e.printStackTrace();
+				logger.error(e.getMessage() ,e );
+			}
+			return post;
+
+		}
+	};
+	
+	
+	
+
+
+	private static final FlatMapFunction<String, UserPostTag> FLAT_USER_POST_TAG3 =
+			new FlatMapFunction<String, UserPostTag>() {
+		public Iterable<UserPostTag> call(String s) throws Exception {
+			//	System.out.println("#####1   " + s);
+
+			Timestamp date = new Timestamp(System.currentTimeMillis());
+			List<UserPostTag> info = new ArrayList<UserPostTag>();
+
+			//Row emptyrow = RowFactory.create(null, null, null, null);
+			try {
+
+				InputStream is = new ByteArrayInputStream(s.getBytes());
+				DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+				DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+				Document doc = null;
+				try {
+					doc = dBuilder.parse(is);
+				} catch (Exception e) {
+					logger.error("Error parsing - " + s);
+					return info;
+				}
+				//	  System.out.println("2");
+				doc.getDocumentElement().normalize();
+
+				NodeList nList = doc.getElementsByTagName("row");
+				for (int temp = 0; temp < nList.getLength(); temp++) {
+					//	System.out.println("3");
+					Node nNode = nList.item(temp);
+					//System.out.println("nodeType = " + nNode.getNodeType() + "  node name = " + nNode.getNodeName() );
+					if (!"row".equals(nNode.getNodeName())) {
+						logger.debug("Not interested in this string - " + s);
+						return info;
+					}
+					NamedNodeMap attrs = nNode.getAttributes();
+					if (attrs == null || attrs.getLength() == 0) {
+						logger.error("Empty row!!! - " + s);
+						return info;
+					}      
+					//	System.out.println("4");
+
+					String id = "-1";
+					String postTypeId = "-1";
+					String userId = "-1";
+					String creationDate = null;
+					String parentPostId = "-1";
+					String acceptedAnswerId = "-1";
+					String tags = "";
+
+					if (attrs.getNamedItem("Id") != null)
+						id = attrs.getNamedItem("Id").getNodeValue();
+
+					if (attrs.getNamedItem("PostTypeId") != null)
+						postTypeId = attrs.getNamedItem("PostTypeId").getNodeValue();
+
+					if (!"1".equals(postTypeId) && !"2".equals(postTypeId)) {
+						logger.debug("Not interested in this string - " + s);
+						return info;
+					}
+
+					if (attrs.getNamedItem("OwnerUserId") != null)
+						userId = attrs.getNamedItem("OwnerUserId").getNodeValue();
+
+					if (attrs.getNamedItem("CreationDate") != null)
+						creationDate = attrs.getNamedItem("CreationDate").getNodeValue();
+
+					if (attrs.getNamedItem("ParentId") != null)
+						parentPostId = attrs.getNamedItem("ParentId").getNodeValue();
+
+					if (attrs.getNamedItem("AcceptedAnswerId") != null)
+						acceptedAnswerId = attrs.getNamedItem("AcceptedAnswerId").getNodeValue();
+
+					if (attrs.getNamedItem("Tags") != null) {
+						tags = attrs.getNamedItem("Tags").getNodeValue();
+					} else {
+						//System.out.println("Need to fetch tag info from redis for parent post:" + parentPostId + "  postTypeId:" + postTypeId );
+					}
+					if ((tags == null || tags.isEmpty()) && parentPostId != null && "2".equals(postTypeId)) {
+						// fetch the tag info from redis
+
+						String psInfo = TKRedisClient.getRedis().get(parentPostId);
+						//	System.out.println("fetching tag info from redis for parent post:" + parentPostId + "  postTypeId:" + postTypeId + "   psInfo = " + psInfo);
+						if (psInfo != null) {
+							PostSummaryInfo psObj = new PostSummaryInfo(psInfo);
+							tags = psObj.getTags();
+						}
+
+					}
+
+					if (tags != null && !tags.isEmpty()) {
+						//System.out.println("++++++++++ id = " + id + "  userId = " + userId + "   tags = " + tags);
+						String[] strs = tags.split("><");
+						if (strs != null && strs.length > 0) {
+
+							for (int i = 0; i < strs.length; i++) {
+								if (strs[i] == null || strs[i].isEmpty()) continue;
+								strs[i] = strs[i].trim();
+								if (strs[i].startsWith("<")) {
+									strs[i] = strs[i].substring(1);
+								}
+								if (strs[i].endsWith(">")){
+									strs[i] = strs[i].substring(0, strs[i].length()-1);
+								}
+								UserPostTag userPostTag = new UserPostTag();
+								userPostTag.setUserid(Long.parseLong(userId));
+								userPostTag.setTag(strs[i]);
+								try {
+									userPostTag.setPosttypeid(Integer.parseInt(postTypeId));
+								} catch (Exception e) { }
+
+								SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+								try {
+									int index = creationDate.indexOf("T");
+									if (index != -1) {
+										creationDate = creationDate.substring(0, index);
+									}
+									userPostTag.setDate(new Timestamp(sdf.parse(creationDate).getTime()));
+								} catch (Exception e) {
+									logger.error("Exception while parsing creation date - " + creationDate);
+									continue;
+								}
+								//info.add(userPostTag);
+								if (userPostTag.getUserid() > 0 && (userPostTag.getTag() != null && !userPostTag.getTag().isEmpty()) && userPostTag.getDate() != null && userPostTag.getPosttypeid() > 0) {
+									//info.add(RowFactory.create(userPostTag.getUserId(), userPostTag.getTag(), userPostTag.getPostTypeId(), userPostTag.getDate()));
+									info.add(userPostTag);
+								} else {											
+									logger.error("^^^^^^^^^^^^^^^^^^^^^^^ found invalid data!!! not adding to the result.. - " + s);	
+								}	
+							}
+							//System.out.println(tags);
+							for (int i = 0; i < info.size(); i++) {
+								//System.out.println("UserId = " + info.get(i).fieldIndex("0") + "  tag = " + info.get(i).fieldIndex("1") +  "  date = " + info.get(i).fieldIndex("2") +  "  postTypeId = " + info.get(i).fieldIndex("3"));
+							}
+							//
+							//return info.toArray(new UserPostTag[info.size()]);
+							return info;
+
+						}
+
+					}  
+				}
+				return info;
+			} catch (Exception e) {
+				//LogWriter.getInstance().WriteLog(e.getMessage());
+				e.printStackTrace();
+				logger.error(e.getMessage(), e);
+				return info;
+			} finally {
+				if (info == null || info.size() == 0) {
+					//logger.error("+++++++++++++++++++++++++++++++++++++++ info is either null or empty!!!! - " + s);
+				} 
+			}
+
+
+		}
+	};
+
+	
+	
+	private static final FlatMapFunction<String, UserAcceptedAnswer> PROCESS_ACCEPTED_ANSWERS =
+			new FlatMapFunction<String, UserAcceptedAnswer>() {
+		public Iterable<UserAcceptedAnswer> call(String s) throws Exception {
+			//	System.out.println("#####1   " + s);
+
+			Timestamp date = new Timestamp(System.currentTimeMillis());
+			List<UserAcceptedAnswer> info = new ArrayList<UserAcceptedAnswer>();
+
+			//Row emptyrow = RowFactory.create(null, null, null, null);
+			try {
+
+				InputStream is = new ByteArrayInputStream(s.getBytes());
+				DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+				DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+				Document doc = null;
+				try {
+					doc = dBuilder.parse(is);
+				} catch (Exception e) {
+					logger.error("Error parsing - " + s);
+					return info;
+				}
+				//	  System.out.println("2");
+				doc.getDocumentElement().normalize();
+
+				NodeList nList = doc.getElementsByTagName("row");
+				for (int temp = 0; temp < nList.getLength(); temp++) {
+					//	System.out.println("3");
+					Node nNode = nList.item(temp);
+					//System.out.println("nodeType = " + nNode.getNodeType() + "  node name = " + nNode.getNodeName() );
+					if (!"row".equals(nNode.getNodeName())) {
+						logger.debug("Not interested in this string - " + s);
+						return info;
+					}
+					NamedNodeMap attrs = nNode.getAttributes();
+					if (attrs == null || attrs.getLength() == 0) {
+						logger.error("Empty row!!! - " + s);
+						return info;
+					}      
+					//	System.out.println("4");
+
+					String id = "-1";
+					String postTypeId = "-1";
+					String userId = "-1";
+					String creationDate = null;
+					String parentPostId = "-1";
+					String acceptedAnswerId = "-1";
+					String tags = "";
+
+					if (attrs.getNamedItem("Id") != null)
+						id = attrs.getNamedItem("Id").getNodeValue();
+
+					if (attrs.getNamedItem("PostTypeId") != null)
+						postTypeId = attrs.getNamedItem("PostTypeId").getNodeValue();
+
+					if (!"1".equals(postTypeId) ) {
+						logger.debug("Not interested in this string - " + s);
+						return info;
+					}
+
+					if (attrs.getNamedItem("OwnerUserId") != null)
+						userId = attrs.getNamedItem("OwnerUserId").getNodeValue();
+
+					if (attrs.getNamedItem("CreationDate") != null)
+						creationDate = attrs.getNamedItem("CreationDate").getNodeValue();
+
+					if (attrs.getNamedItem("ParentId") != null)
+						parentPostId = attrs.getNamedItem("ParentId").getNodeValue();
+
+					if (attrs.getNamedItem("AcceptedAnswerId") != null)
+						acceptedAnswerId = attrs.getNamedItem("AcceptedAnswerId").getNodeValue();
+					
+					if ("1".equals(postTypeId) && (acceptedAnswerId == null || acceptedAnswerId.isEmpty())) {
+						logger.debug("AcceptedAnswerId not found in this string - " + s);
+						return info;
+					}
+
+					if (attrs.getNamedItem("Tags") != null) {
+						tags = attrs.getNamedItem("Tags").getNodeValue();
+					} else {
+						//System.out.println("Need to fetch tag info from redis for parent post:" + parentPostId + "  postTypeId:" + postTypeId );
+					}
+					if ((tags == null || tags.isEmpty()) ) {
+						// fetch the tag info from redis
+
+						String psInfo = TKRedisClient.getRedis().get(id);
+						//	System.out.println("fetching tag info from redis for parent post:" + parentPostId + "  postTypeId:" + postTypeId + "   psInfo = " + psInfo);
+						if (psInfo != null) {
+							PostSummaryInfo psObj = new PostSummaryInfo(psInfo);
+							tags = psObj.getTags();
+						}
+
+					}
+
+					long acceptedAnswerUserId = -1;
+					if (tags != null && !tags.isEmpty()) {
+						String pInfo = TKRedisClient.getRedis().get(acceptedAnswerId);
+						if (pInfo != null) {
+							PostSummaryInfo pObj = new PostSummaryInfo(pInfo);
+							if (pObj != null && pObj.getUserId() > 0) {
+								acceptedAnswerUserId = pObj.getUserId();
+							} 
+						} 
+						if (acceptedAnswerUserId <= 0){
+							logger.error("User Info not found for AcceptedAnswerId!! - " + s);
+							return info;
+						}
+						//System.out.println("++++++++++ id = " + id + "  userId = " + userId + "   tags = " + tags);
+						String[] strs = tags.split("><");
+						if (strs != null && strs.length > 0) {
+
+							for (int i = 0; i < strs.length; i++) {
+								if (strs[i] == null || strs[i].isEmpty()) continue;
+								strs[i] = strs[i].trim();
+								if (strs[i].startsWith("<")) {
+									strs[i] = strs[i].substring(1);
+								}
+								if (strs[i].endsWith(">")){
+									strs[i] = strs[i].substring(0, strs[i].length()-1);
+								}
+								UserAcceptedAnswer userPostTag = new UserAcceptedAnswer();
+								userPostTag.setUserId(acceptedAnswerUserId);
+								userPostTag.setTag(strs[i]);
+								
+
+								SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+								try {
+									int index = creationDate.indexOf("T");
+									if (index != -1) {
+										creationDate = creationDate.substring(0, index);
+									}
+									userPostTag.setDate(new Timestamp(sdf.parse(creationDate).getTime()));
+								} catch (Exception e) {
+									logger.error("Exception while parsing creation date - " + creationDate);
+									continue;
+								}
+								//info.add(userPostTag);
+								if (userPostTag.getUserId() > 0 && (userPostTag.getTag() != null && !userPostTag.getTag().isEmpty()) && userPostTag.getDate() != null ) {
+									//info.add(RowFactory.create(userPostTag.getUserId(), userPostTag.getTag(), userPostTag.getPostTypeId(), userPostTag.getDate()));
+									info.add(userPostTag);
+								} else {											
+									logger.error("^^^^^^^^^^^^^^^^^^^^^^^ found invalid data!!! not adding to the result.. - " + s);	
+								}	
+							}
+							//System.out.println(tags);
+							for (int i = 0; i < info.size(); i++) {
+								//System.out.println("UserId = " + info.get(i).fieldIndex("0") + "  tag = " + info.get(i).fieldIndex("1") +  "  date = " + info.get(i).fieldIndex("2") +  "  postTypeId = " + info.get(i).fieldIndex("3"));
+							}
+							//
+							//return info.toArray(new UserPostTag[info.size()]);
+							return info;
+
+						}
+
+					}  
+				}
+				return info;
+			} catch (Exception e) {
+				//LogWriter.getInstance().WriteLog(e.getMessage());
+				e.printStackTrace();
+				logger.error(e.getMessage(), e);
+				return info;
+			} finally {
+				if (info == null || info.size() == 0) {
+					//logger.error("+++++++++++++++++++++++++++++++++++++++ info is either null or empty!!!! - " + s);
+				} 
+			}
+
+
+		}
+	};
+
+
+
+
+
+
+
+
+
+
+
+
+
+	static String getAttrValue(NamedNodeMap map, String attrName, String defaultValue) {
+		if (map != null && attrName != null  && map.getNamedItem(attrName) != null) {
+			return map.getNamedItem(attrName).getNodeValue();
+		}
+		return defaultValue;
+	}
+
+
+	private static final Function<String, SOUser> SOUSER_PARSE_XML =
+			new Function<String, SOUser>() {
+		public SOUser call(String s) throws Exception {
+
+			SOUser user = new SOUser();
+
+			try {
+
+				InputStream is = new ByteArrayInputStream(s.getBytes());
+				DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+				DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+				Document doc = null;
+				try {
+					doc = dBuilder.parse(is);
+				} catch (Exception e) {
+					logger.error("Error parsing - " + s);
+					return user;
+				}
+
+				doc.getDocumentElement().normalize();
+
+				NodeList nList = doc.getElementsByTagName("row");
+				for (int temp = 0; temp < nList.getLength(); temp++) {
+
+					Node nNode = nList.item(temp);
+					// System.out.println("nodeType = " + nNode.getNodeType() + "  node name = " + nNode.getNodeName() );
+					if (!"row".equals(nNode.getNodeName())) {
+						logger.debug("Not interested in this string - " + s);
+						return user;
+					}
+					NamedNodeMap attrs = nNode.getAttributes();
+					if (attrs == null || attrs.getLength() == 0) {
+						logger.error("Empty row!!! - " + s);
+						return user;
+					}              
+
+					String userId = "-1";
+					String creationDate = null;
+					String reputation = "0";
+					String name = null;
+					String lastAccessDate = null;
+					String location = null;
+					String totalUpVotes = "0";
+					String totalDownVotes = "0";
+					String totalViews = "0";
+					String email = null;
+					String seId = "-1";
+					String age = "-1";
+
+
+					if (attrs.getNamedItem("Id") != null)
+						userId = attrs.getNamedItem("Id").getNodeValue();
+
+
+					if (attrs.getNamedItem("CreationDate") != null)
+						creationDate = attrs.getNamedItem("CreationDate").getNodeValue();
+
+					reputation = getAttrValue(attrs, "Reputation", reputation);
+					name = getAttrValue(attrs, "DisplayName", name);
+					lastAccessDate = getAttrValue(attrs, "LastAccessDate", lastAccessDate);
+
+					location = getAttrValue(attrs, "location", location);
+					totalUpVotes = getAttrValue(attrs, "UpVotes", totalUpVotes);
+					totalDownVotes = getAttrValue(attrs, "DownVotes", totalDownVotes);
+					totalViews = getAttrValue(attrs, "Views", totalViews);
+					age = getAttrValue(attrs, "Age",age);
+					seId = getAttrValue(attrs, "AccountId",seId);
+					email = getAttrValue(attrs, "EmailHash", email);
+
+					// System.out.println(id + "," + name + "," + gender);
+					//line.add(id + "|" + postTypeId + "|" + userId + "|" + parentPostId + "|" + creationDate + "|" + acceptedAnswerId + "|" + score + "|" + tags);
+					user = new SOUser();
+
+					user.setUserid(Long.parseLong(userId));
+					user.setReputation(Long.parseLong(reputation));
+					user.setName(name);
+					user.setLocation(location);
+					//					user.setTotalDownVotes(Long.parseLong(totalDownVotes));
+					//					user.setTotalUpVotes(Long.parseLong(totalUpVotes));
+					//					user.setTotalViews(Long.parseLong(totalViews));
+
+					user.setAge(Integer.parseInt(age));
+
+					//					user.setSeId(Long.parseLong(seId));
+					user.setEmail(email);
+
+					//2014-04-17T00:49:28.617
+					SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+					try {
+						//						user.setCreationDate(new Timestamp(sdf.parse(creationDate).getTime()));
+					} catch (Exception e) {
+						logger.error("Exception while parsing creation date -  "+ creationDate);
+						return user;
+					}
+
+					sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+					try {
+						//						user.setLastAccessDate(new Timestamp(sdf.parse(lastAccessDate).getTime()));
+					} catch (Exception e) {
+						logger.error("Exception while parsing lastACcessDate date - " + lastAccessDate);
+						return user;
+					}
+
+
+					return user;
+
+				}
+			} catch (Exception e) {
+				//LogWriter.getInstance().WriteLog(e.getMessage());
+				e.printStackTrace();
+				logger.error(e.getMessage(), e);
+			}
+			return user;
+
+		}
+	};
+
+
+
+	private static final Function<String, Vote> VOTE_PARSE_XML =
+			new Function<String, Vote>() {
+		public Vote call(String s) throws Exception {
+
+			Vote vote = new Vote();
+
+			try {
+
+				InputStream is = new ByteArrayInputStream(s.getBytes());
+				DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+				DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+				Document doc = null;
+				try {
+					doc = dBuilder.parse(is);
+				} catch (Exception e) {
+					logger.error("Error parsing - " + s);
+					return vote;
+				}
+
+				doc.getDocumentElement().normalize();
+
+				NodeList nList = doc.getElementsByTagName("row");
+				for (int temp = 0; temp < nList.getLength(); temp++) {
+
+					Node nNode = nList.item(temp);
+					//     System.out.println("nodeType = " + nNode.getNodeType() + "  node name = " + nNode.getNodeName() );
+					if (!"row".equals(nNode.getNodeName())) {
+						logger.debug("Not interested in this string - " + s);
+						return vote;
+					}
+					NamedNodeMap attrs = nNode.getAttributes();
+					if (attrs == null || attrs.getLength() == 0) {
+						logger.error("Empty row!!! - " + s);
+						return vote;
+					}              
+
+					String id = "-1";
+					String postId = "-1";
+					String voteTypeId = "-1";
+					String creationDate = null;
+
+
+					if (attrs.getNamedItem("Id") != null)
+						id = attrs.getNamedItem("Id").getNodeValue();
+
+
+					if (attrs.getNamedItem("CreationDate") != null)
+						creationDate = attrs.getNamedItem("CreationDate").getNodeValue();
+
+					voteTypeId = getAttrValue(attrs, "VoteTypeId", voteTypeId);
+					postId = getAttrValue(attrs, "PostId", postId);
+
+					// System.out.println(id + "," + name + "," + gender);
+					//line.add(id + "|" + postTypeId + "|" + userId + "|" + parentPostId + "|" + creationDate + "|" + acceptedAnswerId + "|" + score + "|" + tags);
+					vote = new Vote();
+					vote.setVoteId(Long.parseLong(id));
+					vote.setPostId(Long.parseLong(postId));
+					vote.setVoteTypeId(Integer.parseInt(voteTypeId));
+
+					//2014-04-17T00:49:28.617
+					SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+					try {
+						vote.setCreationDate(new Timestamp(sdf.parse(creationDate).getTime()));
+					} catch (Exception e) {
+						logger.error("Exception while parsing creation date -  "+ creationDate);
+						return vote;
+					}
+
+					return vote;
+
+				}
+			} catch (Exception e) {
+				//LogWriter.getInstance().WriteLog(e.getMessage());
+				e.printStackTrace();
+				logger.error(e.getMessage(), e);
+			}
+			return vote;
+
+		}
+	};
+
+
+	private static final FlatMapFunction<String, ApacheUser> PROCESS_ASF_COMMITTER_DATA =
+			new FlatMapFunction<String, ApacheUser>() {
+		public Iterable<ApacheUser> call(String s) throws Exception {
+			List<ApacheUser> info = new ArrayList<ApacheUser>();
+			try {
+				if (s == null || s.isEmpty()) {
+					logger.error("Invalid data!!! - " + s);
+					return info;
+				}
+				StringTokenizer tokens = new StringTokenizer(s, "\t");
+				if (tokens == null || tokens.countTokens() < 3){
+					logger.debug("No projcts info found!!! - " + s);
+					return info;
+				}
+				String userId = tokens.nextToken();
+				String name = tokens.nextToken();
+				String projects = tokens.nextToken();
+				if (userId == null || userId.isEmpty() || projects == null || projects.isEmpty()) {
+					logger.debug("No projects info found!!! - " + s);
+					return info;
+				}
+				String[] strs = projects.split(",");
+				for (int i = 0; i < strs.length;i++) {
+					if (strs[i] == null || strs[i].isEmpty()) continue;
+					ApacheUser user = new ApacheUser();
+					user.setAsfid(userId.trim());
+					user.setProject(strs[i].trim());
+					info.add(user);
+				}
+			} catch (Exception e) {
+				logger.error("Exception while processing apache committer info!! - " + s);
+				logger.error(e.getMessage(), e);
+			}
+			return info;
+		}
+	};
+
+
+	private static final FlatMapFunction<String, UserPostTagVote> USER_TAG_VOTE_PARSE_XML =
+			new FlatMapFunction<String, UserPostTagVote>() {
+		public Iterable<UserPostTagVote> call(String s) throws Exception {
+
+			UserPostTagVote[] userPostTagVotes = null;
+			List<UserPostTagVote> info = new ArrayList<UserPostTagVote>();
+			try {
+
+				InputStream is = new ByteArrayInputStream(s.getBytes());
+				DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+				DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+				Document doc = null;
+				try {
+					doc = dBuilder.parse(is);
+				} catch (Exception e) {
+					logger.error("Error parsing - " + s);
+					return info;
+				}
+
+				doc.getDocumentElement().normalize();
+
+				NodeList nList = doc.getElementsByTagName("row");
+				for (int temp = 0; temp < nList.getLength(); temp++) {
+
+					Node nNode = nList.item(temp);
+					//     System.out.println("nodeType = " + nNode.getNodeType() + "  node name = " + nNode.getNodeName() );
+					if (!"row".equals(nNode.getNodeName())) {
+						logger.debug("Not interested in this string - " + s);
+						return info;
+					}
+					NamedNodeMap attrs = nNode.getAttributes();
+					if (attrs == null || attrs.getLength() == 0) {
+						logger.error("Empty row!!! - " + s);
+						return info;
+					}              
+
+					String id = "-1";
+					String postId = "-1";
+					String voteTypeId = "-1";
+					String creationDate = null;
+
+
+					if (attrs.getNamedItem("Id") != null)
+						id = attrs.getNamedItem("Id").getNodeValue();
+
+
+					if (attrs.getNamedItem("CreationDate") != null)
+						creationDate = attrs.getNamedItem("CreationDate").getNodeValue();
+
+					voteTypeId = getAttrValue(attrs, "VoteTypeId", voteTypeId);
+					postId = getAttrValue(attrs, "PostId", postId);
+
+
+
+					//2014-04-17T00:49:28.617
+					// SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+					Timestamp date = null;
+					SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+					try {
+						int index = creationDate.indexOf("T");
+						if (index != -1) {
+							creationDate = creationDate.substring(0, index);
+						}
+						date = new Timestamp(sdf.parse(creationDate).getTime());
+					} catch (Exception e) {
+						logger.error("Exception while parsing creation date - " + creationDate + "  str -" + s);
+						return info;
+					}
+
+
+					String tags = "";
+					String userId = "";
+					String psInfo = TKRedisClient.getRedis().get(postId);
+					int postTypeId = -1;
+					if (psInfo != null) {
+						if (psInfo.startsWith("Q_")){
+							psInfo = psInfo.substring(2);
+							postTypeId = 1;
+						}
+						if (psInfo.startsWith("A_")){
+							psInfo = psInfo.substring(2);
+							postTypeId = 2;
+						}
+
+						int index = psInfo.indexOf("_");
+						if (index != -1) {																		
+							tags = psInfo.substring(index + 1);
+							if (tags == null || tags.isEmpty()) tags = "";                   	
+							String[] strs = tags.split("><");
+							List<UserPostTagVote> list = new ArrayList<UserPostTagVote>();
+							if (strs != null && strs.length > 0) {
+								for (int i = 0; i < strs.length; i++) {
+
+									if (strs[i] == null) continue;
+									strs[i] = strs[i].trim();
+									if (strs[i].startsWith("<") ) {
+										strs[i] = strs[i].substring(1);
+									}
+									if (strs[i].endsWith(">")) {
+										strs[i] = strs[i].substring(0, strs[i].length()-1);
+									}
+
+									UserPostTagVote userPostTagVote = new UserPostTagVote();											
+									String user = psInfo.substring(0, index);
+									if (user == null || user.isEmpty() || "-1".equals(user)) continue;
+									userPostTagVote.setUserId(Long.parseLong(user));
+									userPostTagVote.setTag(strs[i]);
+									userPostTagVote.setVoteTypeId(Integer.parseInt(voteTypeId));
+									userPostTagVote.setDate(date);
+									userPostTagVote.setPostTypeId(postTypeId);
+									list.add(userPostTagVote);
+
+								}  
+
+								if (list.size() > 0) {
+									//return list.toArray(new UserPostTagVote[list.size()]);
+									return list;
+								}
+
+							}
+						}
+
+					} else {
+						//logger.error("Info not found in redis for string - " + s);
+					}
+
+
+					return info;
+
+				}
+			} catch (Exception e) {
+				//LogWriter.getInstance().WriteLog(e.getMessage());
+				logger.error(e.getMessage(), e);
+			} finally {
+				if (info == null || info.size() == 0) {
+					//logger.error("returning empty list for string - " + s);
+				}
+			}
+			return info;
+
+		}
+	};
+
+
+
+
+
+
+
+	static private boolean deleteDirectory(File path) {
+		if (path.exists()) {
+			File[] files = path.listFiles();
+			for (int i = 0; i < files.length; i++) {
+				if (files[i].isDirectory()) {
+					deleteDirectory(files[i]);
+				} else {
+					files[i].delete();
+				}
+			}
+		}
+		return (path.delete());
+	}
+
+	
+	private static boolean initializeContexts() {
+		long startTime = System.currentTimeMillis();
+		try {
+			conf = new SparkConf().setAppName(Config.getProperty("seed-data-processor-name")).setMaster(Config.getProperty("master-host", "local"));		     
+			conf.set("spark.cassandra.connection.host", Config.getProperty("cassandra-host"));
+		} catch (Exception e) {
+			e.printStackTrace();
+			logger.error("Exception while creating SparkConf!!!");
+			return false;
+		}
+
+		try {
+			context = new JavaSparkContext(conf);
+		} catch (Exception e) {
+			e.printStackTrace();
+			logger.error("Exception while creating JavaSparkContext!!!");
+			return false;
+		}
+		
+		
+		session = null;
+		try {
+			// create cassandra connection/session
+			connector = CassandraConnector.apply(context.getConf());
+			session = connector.openSession();	
+
+		} catch (Exception e) {
+			e.printStackTrace();
+			logger.error("Exception while creating Cassandra connector!!");
+			logger.error(e.getMessage(),e);
+			return false;
+		}
+
+		try {
+			// create spark sql context
+			sqlContext = new org.apache.spark.sql.SQLContext(context);
+		} catch (Exception e) {
+			e.printStackTrace();
+			logger.error("Exception while creating Spark SQL Context!!!");
+			return false;
+		}
+		
+		logger.debug("Successfully initialized all contexts!!!  Time taken = " + (System.currentTimeMillis() - startTime));
+		return true;
+	}
+	
+	
+	static private boolean loadASFUserData() {
+		long startTime = System.currentTimeMillis();
+		String asfCommittersFile = asfCommittersFile = Config.getProperty("asf-committer-seed-data-file");
+		String usersFile = Config.getProperty("so-users-seed-data-file");
+		if (usersFile == null || usersFile.isEmpty()) {
+			logger.error("ASF User/Projects data file not found!!!");
+			return false;
+		}
+		
+		try {
+			// filter the lines that are not required
+			JavaRDD<String> asflines = context.textFile(asfCommittersFile);
+	
+			JavaRDD<ApacheUser> asfline = asflines.flatMap(PROCESS_ASF_COMMITTER_DATA);
+	
+			DataFrame asf_df = sqlContext.createDataFrame(asfline, ApacheUser.class);
+			asf_df.registerTempTable("asfinfo");
+			//asf_df.rdd().saveAsTextFile(outputDir + "asfinfo.txt");
+			asf_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "asf_committer_projects")
+			.format("org.apache.spark.sql.cassandra").save();
+		} catch (Exception e) {
+			logger.error("Exception while loading ASF User/Projects data!! Time taken - " + (System.currentTimeMillis() - startTime));
+			logger.error(e.getMessage(), e);
+			return false;
+		}
+		logger.debug("Time taken to process apache users= " + (System.currentTimeMillis() - startTime));
+		return true;
+	}
+
+	
+	static private boolean loadSOUserData() {
+		long startTime = System.currentTimeMillis();
+		String usersFile = Config.getProperty("so-users-seed-data-file");
+		if (usersFile == null || usersFile.isEmpty()) {
+			logger.error("SO User data file not found!!!");
+			return false;
+		}
+		try {
+			//update SO user data
+			JavaRDD<String> userlines = context.textFile(usersFile).filter(
+					new Function<String, Boolean>() {
+						public Boolean call(String s) {
+							return (!s.contains("<users>") && !s.contains("</users>") && !s.contains("<?xml"));
+						}
+					});
+				  
+			JavaRDD<SOUser> userline = userlines.map(SOUSER_PARSE_XML);
+	
+			DataFrame sousers_df = sqlContext.createDataFrame(userline, SOUser.class);
+			sousers_df.registerTempTable("users");
+			sousers_df.printSchema();
+	
+			//sousers_df.rdd().saveAsTextFile(outputDir + "users.txt");
+			sousers_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "so_users")
+			.format("org.apache.spark.sql.cassandra").save();
+		} catch (Exception e) {
+			logger.error("Exception while loading SO User data!! Time taken - " + (System.currentTimeMillis() - startTime));
+			logger.error(e.getMessage(), e);
+			return false;
+		}
+
+		logger.debug("Successfully laoded SO users = " + (System.currentTimeMillis() - startTime));
+		return true;
+
+	}
+	
+
+
+
+
+
+
+	public static void main(String[] arg) {
+	
+		long start = System.currentTimeMillis();
+		long startTime = System.currentTimeMillis();
+//		SparkConf conf = null;
+//		JavaSparkContext context = null;
+//		SQLContext sqlContext = null;
+//		CassandraConnector connector = null;
+//		Session session = null;
+		
+		String outputDir = null;	
+		String postsFile = null;
+		String usersFile = null;
+		String votesFile = null;
+		String badgesFile = null;
+		String postLinksFile = null;
+		String asfCommittersFile = null;
+	
+		try {
+
+	
+//			conf = new SparkConf().setAppName(Config.getProperty("seed-data-processor-name")).setMaster(Config.getProperty("master-host", "local"));		     
+//			conf.set("spark.cassandra.connection.host", Config.getProperty("cassandra-host"));
+//	
+//			context = new JavaSparkContext(conf);
+//	
+//			// create cassandra connection/session
+//			connector = CassandraConnector.apply(context.getConf());
+//			session = null;
+//			try {
+//				session = connector.openSession();	
+//	
+//			} catch (Exception e) {
+//				e.printStackTrace();
+//				logger.error("Exception while creating Cassandra connector!!");
+//				logger.error(e.getMessage(),e);
+//				return;
+//			}
+//	
+//			// create spark sql context
+//			sqlContext = new org.apache.spark.sql.SQLContext(context);
+//			
+			if (!initializeContexts()) {
+				logger.error("Could not initialize all contexts!!!");
+				return;
+			}
+			
+			
+			// read the seed data file name from configuration
+			outputDir = Config.getProperty("output-dir", "");				
+			postsFile = Config.getProperty("so-posts-seed-data-file");
+			usersFile = Config.getProperty("so-users-seed-data-file");
+			votesFile = Config.getProperty("so-votes-seed-data-file");
+			badgesFile = Config.getProperty("so-badges-seed-data-file");
+			postLinksFile = Config.getProperty("so-postlinks-seed-data-file");
+			asfCommittersFile = Config.getProperty("asf-committer-seed-data-file");
+	
+			// delete any output directory so process doesn't fail when you are running in local mode
+			deleteDirectory(new File(outputDir));
+						
+//			startTime = System.currentTimeMillis();
+//			
+//			//update SO user data
+//			JavaRDD<String> userlines = context.textFile(usersFile).filter(
+//					new Function<String, Boolean>() {
+//						public Boolean call(String s) {
+//							return (!s.contains("<users>") && !s.contains("</users>") && !s.contains("<?xml"));
+//						}
+//					});
+//				  
+//			JavaRDD<SOUser> userline = userlines.map(SOUSER_PARSE_XML);
+//	
+//	
+//			DataFrame sousers_df = sqlContext.createDataFrame(userline, SOUser.class);
+//			sousers_df.registerTempTable("users");
+//			sousers_df.printSchema();
+//	
+//			//sousers_df.rdd().saveAsTextFile(outputDir + "users.txt");
+//			sousers_df.write().mode(SaveMode.Append)
+//			.option("keyspace", "tk_insight")
+//			.option("table", "so_users")
+//			.format("org.apache.spark.sql.cassandra").save();
+//	
+//			logger.debug("Time taken to process users = " + (System.currentTimeMillis() - startTime));
+			
+			loadSOUserData();
+	
+	
+//			// filter the lines that are not required
+//			JavaRDD<String> asflines = context.textFile(asfCommittersFile);
+//	
+//			logger.debug("No. of ASF Committers :" + asflines.count());   
+//	
+//			JavaRDD<ApacheUser> asfline = asflines.flatMap(PROCESS_ASF_COMMITTER_DATA);
+//	
+//			DataFrame asf_df = sqlContext.createDataFrame(asfline, ApacheUser.class);
+//			asf_df.registerTempTable("asfinfo");
+//			//asf_df.rdd().saveAsTextFile(outputDir + "asfinfo.txt");
+//			asf_df.write().mode(SaveMode.Append)
+//			.option("keyspace", "tk_insight")
+//			.option("table", "asf_committer_projects")
+//			.format("org.apache.spark.sql.cassandra").save();
+//			logger.debug("Time taken to process apache  users= " + (System.currentTimeMillis() - startTime));
+			
+			loadASFUserData();
+	
+			// filter the lines that are not required
+			/**
+			JavaRDD<String> postlines = context.textFile(postsFile).filter(
+					new Function<String, Boolean>() {
+						public Boolean call(String s) {
+							return (!s.contains("<posts>") && !s.contains("</posts>") && !s.contains("<?xml") && s.contains(" OwnerUserId=\"") && (s.contains("PostTypeId=\"1\"") || s.contains("PostTypeId=\"2\"")));
+						}
+					});
+					***/
+			
+			// filter the lines that are not required
+			JavaRDD<String> qlines = context.textFile(postsFile).filter(
+					new Function<String, Boolean>() {
+						public Boolean call(String s) {
+							return (!s.contains("<posts>") && !s.contains("</posts>") && !s.contains("<?xml") && s.contains(" OwnerUserId=\"") && (s.contains("PostTypeId=\"1\"") ));
+						}
+					});
+			
+			// filter the lines that are not required
+			JavaRDD<String> alines = context.textFile(postsFile).filter(
+					new Function<String, Boolean>() {
+						public Boolean call(String s) {
+							return (!s.contains("<posts>") && !s.contains("</posts>") && !s.contains("<?xml") && s.contains(" OwnerUserId=\"") && ( s.contains("PostTypeId=\"2\"")));
+						}
+					});
+	
+	
+			startTime = System.currentTimeMillis();
+			JavaRDD<Post> qposts = qlines.map(POST_PARSE_XML);
+	       
+			DataFrame qposts_df = sqlContext.createDataFrame(qposts, Post.class);
+			qposts_df.registerTempTable("qposts");
+			//qposts_df.rdd().saveAsTextFile(outputDir + "qposts.txt");
+			logger.debug("Time taken to process question posts = " + (System.currentTimeMillis() - startTime));
+			
+			
+			startTime = System.currentTimeMillis();
+			JavaRDD<Post> aposts = alines.map(POST_PARSE_XML);
+	       
+			DataFrame aposts_df = sqlContext.createDataFrame(aposts, Post.class);
+			aposts_df.registerTempTable("aposts");
+			//aposts_df.rdd().saveAsTextFile(outputDir + "aposts.txt");
+			logger.debug("Time taken to process answer posts = " + (System.currentTimeMillis() - startTime));
+			
+			
+			startTime = System.currentTimeMillis();
+			//CREATE TABLE if not exists tk_insight.user_post_view_count (date TIMESTAMP, userid bigint, cnt bigint, PRIMARY KEY (userid, date)) with clustering order by (date desc)");
+			DataFrame user_view_counts_df = sqlContext.sql("select creationDate as date, userId as userid, sum(viewCount) as cnt from qposts group by creationDate, userId");
+			user_view_counts_df.registerTempTable("user_post_view_count");
+			user_view_counts_df.printSchema();
+			user_view_counts_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "user_post_view_count")
+			.format("org.apache.spark.sql.cassandra").save();
+			logger.debug("Time taken to process user_post_view_count = " + (System.currentTimeMillis() - startTime));
+			
+			JavaRDD<String> postlines = qlines.union(alines);
+		   // postlines.cache();
+		   // logger.debug("No. of Questions = " + qlines.count() + "  No. of answers = " + alines.count() + "  Total no. of posts = " + postlines.count());
+			
+		    startTime = System.currentTimeMillis();
+			// Convert records of the RDD  to Rows.
+			JavaRDD<UserPostTag> rowRDD2 = postlines.flatMap(FLAT_USER_POST_TAG3);	
+			DataFrame userposttag_df = sqlContext.createDataFrame(rowRDD2, UserPostTag.class);
+			userposttag_df.printSchema();
+			//userposttag_df.rdd().saveAsTextFile(outputDir + "userposttag.txt");
+			userposttag_df.registerTempTable("userposttags");
+			userposttag_df.printSchema();
+			
+			
+			logger.debug("Grouped data !!!!*****************************************************************************************************");
+			DataFrame userposttagcounts_df = userposttag_df.groupBy("userid", "date", "tag", "posttypeid").count();
+			userposttagcounts_df = userposttagcounts_df.withColumnRenamed("count", "cnt");
+			//userposttagcounts_df.rdd().saveAsTextFile(outputDir + "userposttagscounts.txt");
+			
+			userposttagcounts_df.registerTempTable("user_post_tags");
+			userposttagcounts_df.printSchema();
+			userposttagcounts_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "user_post_tags")
+			.format("org.apache.spark.sql.cassandra").save();
+			logger.debug("######################################################################Time taken to process user post tags = " + (System.currentTimeMillis() - startTime) ) ;
+			
+		    startTime = System.currentTimeMillis();
+			// Convert records of the RDD  to Rows.
+			JavaRDD<UserAcceptedAnswer> acceptedAnswers = qlines.flatMap(PROCESS_ACCEPTED_ANSWERS);	
+			DataFrame acceptedAnswers_df = sqlContext.createDataFrame(acceptedAnswers, UserAcceptedAnswer.class);
+			acceptedAnswers_df.printSchema();
+
+			acceptedAnswers_df.registerTempTable("useracceptedanswers");
+									
+			DataFrame acceptedAnswers_df2 = sqlContext.sql("select date, userId as userid, tag, count(*) as cnt "
+					+ " from useracceptedanswers group by date, userId, tag");
+	
+			acceptedAnswers_df2.registerTempTable("user_accepted_answers");
+			//acceptedAnswers_df2.cache();
+			acceptedAnswers_df2.printSchema();
+			//userposttagcounts.show(10);
+			acceptedAnswers_df2.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "user_accepted_answers")
+			.format("org.apache.spark.sql.cassandra").save();
+	
+	
+			//logger.debug("No. of userposttags  to process:" + df.count()); 
+			logger.debug("######################################################################Time taken to process accepted anserwers = " + (System.currentTimeMillis() - startTime) + "  count = " + acceptedAnswers_df2.count());
+			
+			
+			startTime = System.currentTimeMillis();
+			JavaRDD<String> votelines = context.textFile(votesFile).filter(
+					new Function<String, Boolean>() {
+						public Boolean call(String s) {
+							return (!s.contains("<votes>") && !s.contains("</votes>") && !s.contains("<?xml"));
+						}
+					});
+	
+	
+			//logger.debug("No. of votes to process:" + votelines.count()); 
+	
+			JavaRDD<UserPostTagVote> voteline = votelines.flatMap(USER_TAG_VOTE_PARSE_XML);	
+			DataFrame user_post_tag_vote_df = sqlContext.createDataFrame(voteline, UserPostTagVote.class);
+			user_post_tag_vote_df.registerTempTable("userposttagvotes");
+			user_post_tag_vote_df.printSchema();
+			
+			logger.debug("Time taken to process user_post_tag_vote data = " + (System.currentTimeMillis() - startTime));
+	
+			startTime = System.currentTimeMillis();
+	
+			DataFrame user_post_tag_votes_counts_df = sqlContext.sql("select date, userId as userid, tag, postTypeId as posttypeid, voteTypeId as votetypeid, count(*) as cnt "
+					+ " from userposttagvotes group by date, userId, tag, postTypeId, voteTypeId ");
+	
+			
+			user_post_tag_votes_counts_df.registerTempTable("user_post_tag_votes");
+		//	user_post_tag_votes_counts_df.cache();
+			user_post_tag_votes_counts_df.printSchema();
+			//user_post_tag_votes_counts_df.rdd().saveAsTextFile(outputDir + "userposttagvotes.txt");
+			//	user_post_tag_votes.show(10);
+			user_post_tag_votes_counts_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "user_post_tag_votes")
+			.format("org.apache.spark.sql.cassandra").save();
+			
+			logger.debug("Time taken to get user_post_tag_votes = " + (System.currentTimeMillis() - startTime) );
+			
+			startTime = System.currentTimeMillis();
+			
+			user_post_tag_votes_counts_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "tag_post_user_votes")
+			.format("org.apache.spark.sql.cassandra").save();
+	
+			logger.debug("Time taken to get tag_post_user_votes = " + (System.currentTimeMillis() - startTime) );
+			
+			
+	
+			logger.debug("***********************************************************************************************************************");
+		
+			
+			startTime = System.currentTimeMillis();
+			
+			DataFrame tag_user_questions_counts_df = sqlContext.sql("select tag, userid, sum(cnt) as cnt "
+					+ " from user_post_tags where posttypeid=1 group by tag, userid ");
+	
+			tag_user_questions_counts_df.registerTempTable("tag_user_questions");
+			tag_user_questions_counts_df.printSchema();
+			//	user_post_tag_votes.show(10);
+			tag_user_questions_counts_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "tag_user_questions")
+			.format("org.apache.spark.sql.cassandra").save();
+			
+			logger.debug("Time taken to get tag_user_questions = " + (System.currentTimeMillis() - startTime));
+			
+			startTime = System.currentTimeMillis();
+			
+			DataFrame tag_user_answers_counts_df = sqlContext.sql("select tag, userid, sum(cnt) as cnt "
+					+ " from user_post_tags where posttypeid=2 group by tag, userid ");
+	
+			tag_user_answers_counts_df.registerTempTable("tag_user_answers");
+			tag_user_answers_counts_df.printSchema();
+			tag_user_answers_counts_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "tag_user_answers")
+			.format("org.apache.spark.sql.cassandra").save();
+			
+			logger.debug("Time taken to get tag_user_answers = " + (System.currentTimeMillis() - startTime));
+			
+			startTime = System.currentTimeMillis();
+			
+			DataFrame tag_user_up_qvotes_df = sqlContext.sql("select tag, userid, sum(cnt) as cnt "
+					+ " from user_post_tag_votes where posttypeid=1 and votetypeid=2 group by tag, userid ");
+	
+			tag_user_up_qvotes_df.registerTempTable("tag_user_up_qvotes");
+			tag_user_up_qvotes_df.printSchema();
+			//	user_post_tag_votes.show(10);
+			tag_user_up_qvotes_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "tag_user_up_qvotes")
+			.format("org.apache.spark.sql.cassandra").save();
+			
+			logger.debug("Time taken to get tag_user_up_qvotes = " + (System.currentTimeMillis() - startTime));
+			
+			startTime = System.currentTimeMillis();
+			
+			DataFrame tag_user_down_qvotes_df = sqlContext.sql("select tag, userid, sum(cnt) as cnt "
+					+ " from user_post_tag_votes where posttypeid=1 and votetypeid=3 group by tag, userid ");
+	
+			tag_user_down_qvotes_df.registerTempTable("tag_user_down_qvotes");
+			tag_user_down_qvotes_df.printSchema();
+			//	user_post_tag_votes.show(10);
+			tag_user_down_qvotes_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "tag_user_down_qvotes")
+			.format("org.apache.spark.sql.cassandra").save();
+			
+			logger.debug("Time taken to get tag_user_down_qvotes = " + (System.currentTimeMillis() - startTime));
+			
+			startTime = System.currentTimeMillis();
+			DataFrame tag_user_up_avotes_df = sqlContext.sql("select tag, userid, sum(cnt) as cnt "
+					+ " from user_post_tag_votes where posttypeid=2 and votetypeid=2 group by tag, userid");
+	
+			tag_user_up_avotes_df.registerTempTable("tag_user_up_avotes");
+			tag_user_up_avotes_df.printSchema();
+			//	user_post_tag_votes.show(10);
+			tag_user_up_avotes_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "tag_user_up_avotes")
+			.format("org.apache.spark.sql.cassandra").save();
+			
+			logger.debug("Time taken to get tag_user_up_avotes = " + (System.currentTimeMillis() - startTime));
+			
+			startTime = System.currentTimeMillis();
+			DataFrame tag_user_down_avotes_df = sqlContext.sql("select tag, userid, sum(cnt) as cnt "
+					+ " from user_post_tag_votes where posttypeid=2 and votetypeid=3 group by tag, userid");
+	
+			tag_user_down_avotes_df.registerTempTable("tag_user_down_avotes");
+			tag_user_down_avotes_df.printSchema();
+			//	user_post_tag_votes.show(10);
+			tag_user_down_avotes_df.write().mode(SaveMode.Append)
+			.option("keyspace", "tk_insight")
+			.option("table", "tag_user_down_avotes")
+			.format("org.apache.spark.sql.cassandra").save();
+			
+			logger.debug("Time taken to get tag_user_down_avotes = " + (System.currentTimeMillis() - startTime));
+	
+
+		} catch (Exception e) {
+			logger.error("Exception while processing seed data!!!");
+			logger.error(e.getMessage(), e);
+		} finally {
+			if (session != null) session.close();
+	
+	
+			if (context != null) context.stop();
+			logger.debug("Time taken  = " + (System.currentTimeMillis() - start));
+		}
+	
+	
+	}
+
+
+
+
+
+}
