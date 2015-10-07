@@ -1,0 +1,570 @@
+{% extends "base.html" %}
+
+{% block viewuserinfo %}
+<!--
+<div class="mytopcontainer" style="width: 100%;">
+    <div class="container" style="width: 550px; height:400px; float: left;">
+    </div>
+    <div class="container2" style="margin-left: width: 550px; height:400px;">
+    </div>
+</div>
+-->
+<style>
+table, th, td {
+    border: 1px solid black;
+}
+</style>
+<!--
+<div class="containter0">
+
+     <div class="starter-template">
+
+       <div class="row" style="height:30vh;">
+
+               <div class="col-md-10 col-md-offset-1">
+-->
+<div id="container0" style="width: 750px; height: 600px; margin: 0 auto">
+
+                   <table class="table"> 
+
+                     <thead>
+
+                       <tr>
+
+                         <th align="center">Metric</th>
+
+                         <th align="center">Count</th>
+
+                       </tr>
+
+                     </thead>
+
+                     <tbody>
+
+                       <tr>
+
+                         <td>TK Score</td>
+
+                         <td>{{output.tk_score|safe}}</td>
+
+                       </tr>
+                       <tr>
+
+                         <td>Apache projects</td>
+
+                         <td>{{output.apache_projects|safe}}</td>
+
+                       </tr>
+                       <tr>
+
+                         <td>Total questions posted</td>
+
+                         <td>{{output.total_questions}}</td>
+
+                       </tr>
+                       <tr>
+
+                         <td>Total answers posted</td>
+
+                         <td>{{output.total_answers}}</td>
+
+                       </tr>
+                       <tr>
+
+                         <td>Total accepted answers</td>
+
+                         <td>{{output.total_accepted_answers}}</td>
+
+                       </tr>
+                       <tr>
+
+                         <td>Total UP votes</td>
+
+                         <td>{{output.total_upvotes}}</td>
+
+                       </tr>
+                       <tr>
+
+                         <td>Total Down votes</td>
+
+                         <td>{{output.total_downvotes}}</td>
+
+                       </tr>
+
+                     </tbody>
+
+                   </table>
+<!--
+
+               </div>
+
+       </div>
+
+     </div>
+-->
+<!--
+
+   </div>
+<div id="container" style="width: 550px; height: 400px; margin: 0 auto"></div>
+<div id="container2" style="width: 550px; height: 400px; margin: 0 auto"></div>
+<div id="container3" style="width: 550px; height: 400px; margin: 0 auto"></div>
+<div id="container4" style="width: 1000px; height: 400px; margin: 0 auto"></div>
+<div id="container5" style="width: 550px; height: 400px; margin: 0 auto"></div>
+<div id="container6" style="width: 550px; height: 400px; margin: 0 auto"></div>
+<div id="container7" style="width: 550px; height: 400px; margin: 0 auto"></div>
+<div id="container8" style="width: 550px; height: 400px; margin: 0 auto"></div>
+-->
+<div style="position: relative; text-align: center">
+<div id="container" style="display:inline-block; width: 750px; height: 500px; margin: 30px 20px"></div>
+<div id="container2" style="display:inline-block; width: 750px; height: 500px; margin: 30px 20px"></div>
+<div id="container3" style="display:inline-block; width: 750px; height: 500px; margin: 30px 20px"></div>
+<div id="container5" style="display:inline-block; width: 750px; height: 500px; margin: 30px 20px"></div>
+<div id="container6" style="display:inline-block; width: 750px; height: 500px; margin: 30px 20px"></div>
+<div id="container7" style="display:inline-block; width: 750px; height: 600px; margin: 30px 20px"></div>
+<div id="container8" style="display:inline-block; width: 750px; height: 400px; margin: 30px 20px"></div>
+<!--
+<div id="container4" style="display:inline-block; width: 1000px; height: 400px; margin: 30px 20px"></div>
+-->
+</div>
+<script src="http://ajax.googleapis.com/ajax/libs/jquery/2.1.3/jquery.min.js"></script>
+<script src="http://code.highcharts.com/stock/highstock.js"></script>
+<!-- <script src="http://code.highcharts.com/highcharts.js"></script> -->
+<script language="JavaScript">
+$(function () {
+    $('#container').highcharts({
+        chart: {
+            type: 'column'
+        },
+        title: {
+            text: 'Number of questions per topic'
+        },
+        subtitle: {
+            text: 'Source: <a href="http://www.stackoverflow.com">Stackoverflow</a>'
+        },
+        xAxis: {
+            min: 10 ,
+            type: 'category',
+            labels: {
+                rotation: -45,
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        },
+        scrollbar: {
+           enabled: true
+        },
+        yAxis: {
+            min: 0,
+            title: {
+                text: 'Number of questions'
+            }
+        },
+        legend: {
+            enabled: false
+        },
+        tooltip: {
+            pointFormat: 'Number of questions: <b>{point.y} </b>'
+        },
+        series: [{
+            name: 'Number of Questions',
+            data: {{ output.topic_questions|safe }} ,
+            dataLabels: {
+                enabled: true,
+                rotation: -90,
+                color: '#FFFFFF',
+                align: 'right',
+                format: '{point.y}', // one decimal
+                y: 10, // 10 pixels down from the top
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        }]
+    });
+
+
+    $('#container2').highcharts({
+        chart: {
+            type: 'column'
+        },
+        title: {
+            text: 'Number of answers per topic'
+        },
+        subtitle: {
+            text: 'Source: <a href="http://www.stackoverflow.com">Stackoverflow</a>'
+        },
+        xAxis: {
+            type: 'category',
+            min: 10,
+            labels: {
+                rotation: -45,
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        },
+	scrollbar: {
+           enabled: true
+        },
+        yAxis: {
+            min: 0,
+            title: {
+                text: 'Number of answers'
+            }
+        },
+        legend: {
+            enabled: false
+        },
+        tooltip: {
+            pointFormat: 'Number of answers: <b>{point.y} </b>'
+        },
+        series: [{
+            name: 'Number of Questions',
+            data: {{ output.topic_answers|safe }} ,
+            dataLabels: {
+                enabled: true,
+                rotation: -90,
+                color: '#FFFFFF',
+                align: 'right',
+                format: '{point.y}', // one decimal
+                y: 10, // 10 pixels down from the top
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        }]
+    });
+
+    $('#container3').highcharts({
+        chart: {
+            type: 'column'
+        },
+        title: {
+            text: 'Number of accepted answers per topic'
+        },
+        subtitle: {
+            text: 'Source: <a href="http://www.stackoverflow.com">Stackoverflow</a>'
+        },
+        xAxis: {
+            min: 5,
+            type: 'category',
+            labels: {
+                rotation: -45,
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        },
+        scrollbar: {
+           enabled: true
+        },
+        yAxis: {
+            min: 0,
+            title: {
+                text: 'Number of accepted answers'
+            }
+        },
+        legend: {
+            enabled: false
+        },
+        tooltip: {
+            pointFormat: 'Number of accepted answers: <b>{point.y} </b>'
+        },
+        series: [{
+            name: 'Number of accepted answers',
+            data: {{ output.topic_accepted_answers|safe }} ,
+            dataLabels: {
+                enabled: true,
+                rotation: -90,
+                color: '#FFFFFF',
+                align: 'right',
+                format: '{point.y}', // one decimal
+                y: 10, // 10 pixels down from the top
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        }]
+    });
+
+    $('#container4').highcharts({
+    chart: {
+        renderTo:'container4',
+        type:'column'
+    },
+    title:{
+        text:'User Metrics (No. of questions/No. of answers/No. of accepted answers per topic)'
+    },
+    credits:{enabled:false},
+    legend:{
+    },
+    plotOptions: {
+        series: {
+            shadow:false,
+            borderWidth:0,
+        }
+    },
+    xAxis:{
+        min: 10,
+        categories: {{ output.distinct_topic_list|safe }},
+        lineColor:'#999',
+        lineWidth:1,
+        tickColor:'#666',
+        tickLength:3,
+        title:{
+            text:'Topic'
+        }
+    },
+    scrollbar: {
+           enabled: true
+        },
+    yAxis:{
+        lineColor:'#999',
+        lineWidth:1,
+        tickColor:'#666',
+        tickWidth:1,
+        tickLength:3,
+        gridLineColor:'#ddd',
+        title:{
+            text:'No. of questions/No. of answers/No. of accepted answers per topic',
+        //    rotation:0,
+         //   margin:50,
+        }
+    },    
+    series: [{
+        name: 'Total questions',
+        data: {{ output.distinct_tag_question_list }}
+    }, {
+        name: 'Total answers',
+        data: {{ output.distinct_tag_answer_list }}
+    }, {
+        name: 'Total accepted answers',
+        data: {{ output.distinct_tag_acceptedanswer_list}}
+    }]
+    
+    });
+
+    $('#container5').highcharts({
+        chart: {
+            type: 'column'
+        },
+        title: {
+            text: 'Number of UP votes for questions per topic'
+        },
+        subtitle: {
+            text: 'Source: <a href="http://www.stackoverflow.com">Stackoverflow</a>'
+        },
+        xAxis: {
+            min: 5, 
+            type: 'category',
+            labels: {
+                rotation: -45,
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        },
+    scrollbar: {
+           enabled: true
+        },
+        yAxis: {
+            min: 0,
+            title: {
+                text: 'Number of UP votes for questions'
+            }
+        },
+        legend: {
+            enabled: false
+        },
+        tooltip: {
+            pointFormat: 'Number of questions: <b>{point.y} </b>'
+        },
+        series: [{
+            name: 'Number of Questions',
+            data: {{ output.topic_question_upvotes|safe }} ,
+            dataLabels: {
+                enabled: true,
+                rotation: -90,
+                color: '#FFFFFF',
+                align: 'right',
+                format: '{point.y}', // one decimal
+                y: 10, // 10 pixels down from the top
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        }]
+    });
+
+    $('#container6').highcharts({
+        chart: {
+            type: 'column'
+        },
+        title: {
+            text: 'Number of UP votes for answers per topic'
+        },
+        subtitle: {
+            text: 'Source: <a href="http://www.stackoverflow.com">Stackoverflow</a>'
+        },
+        xAxis: {
+            min: 5,
+            type: 'category',
+            labels: {
+                rotation: -45,
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        },
+    scrollbar: {
+           enabled: true
+        },
+        yAxis: {
+            min: 0,
+            title: {
+                text: 'Number of UP votes for answers'
+            }
+        },
+        legend: {
+            enabled: false
+        },
+        tooltip: {
+            pointFormat: 'Number of answers: <b>{point.y} </b>'
+        },
+        series: [{
+            name: 'Number of Questions',
+            data: {{ output.topic_answer_upvotes|safe }} ,
+            dataLabels: {
+                enabled: true,
+                rotation: -90,
+                color: '#FFFFFF',
+                align: 'right',
+                format: '{point.y}', // one decimal
+                y: 10, // 10 pixels down from the top
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        }]
+    });
+    $('#container7').highcharts({
+        chart: {
+            type: 'pie',
+            plotBackgroundColor: null,
+            plotBorderWidth: null,
+            plotShadow: false
+        },
+        tooltip: {
+            pointFormat: '{series.name}: <b>{point.percentage:.1f}%</b>'
+         },
+        title: {
+            text: 'Expertise per topic'
+        },
+        subtitle: {
+            text: 'Source: <a href="http://www.stackoverflow.com">Stackoverflow</a>'
+        },
+        legend: {
+            enabled: false
+        },
+        plotOptions: {
+            pie: {
+               allowPointSelect: true,
+               cursor: 'pointer',
+               dataLabels: {
+                  enabled: true,
+                  format: '<b>{point.name}</b>: {point.percentage:.1f} %',
+                  style: {
+                     color: (Highcharts.theme && Highcharts.theme.contrastTextColor) || 'black'
+                  }
+               }
+            }
+         },
+
+        series: [{
+            type: 'pie',
+            name: 'Technical Skils ',
+/**
+            data: [
+               ['Firefox',   45.0],
+               ['IE',       26.8],
+               ['Chrome',   12.8],
+               ['Safari',    8.5],
+               ['Opera',     6.2],
+               ['Others',   0.7]
+            ]
+**/
+            data: {{ output.tag_percent_list|safe }}
+        }]
+    });
+
+    $('#container8').highcharts({
+        chart: {
+            type: 'column'
+        },
+        title: {
+            text: 'Percentile per topic'
+        },
+        subtitle: {
+            text: 'Source: <a href="http://www.stackoverflow.com">Stackoverflow</a>'
+        },
+        xAxis: {
+            min: 5,
+            type: 'category',
+            labels: {
+                rotation: -45,
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        },
+    scrollbar: {
+           enabled: true
+        },
+        yAxis: {
+            min: 0,
+            title: {
+                text: 'Percentile'
+            }
+        },
+        legend: {
+            enabled: false
+        },
+        tooltip: {
+            pointFormat: 'Percentile: <b>{point.y:.1f} </b>'
+        },
+        series: [{
+            name: 'Percentile',
+            data: {{ output.topic_percentile_list|safe }} ,
+            dataLabels: {
+                enabled: true,
+                rotation: -90,
+                color: '#FFFFFF',
+                align: 'right',
+                format: '{point.y:.1f}', // one decimal
+                y: 10, // 10 pixels down from the top
+                style: {
+                    fontSize: '13px',
+                    fontFamily: 'Verdana, sans-serif'
+                }
+            }
+        }]
+    });
+
+
+});
+
+</script>
+
+{% endblock %}
